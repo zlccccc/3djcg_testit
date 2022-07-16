@@ -17,7 +17,7 @@ from itertools import chain
 from collections import Counter
 from torch.utils.data import Dataset
 
-from lib.config_joint import CONF
+from lib.config_captioning import CONF
 from utils.pc_utils import random_sampling, rotx, roty, rotz
 from utils.box_util import get_3d_box, get_3d_box_batch
 from data.scannet.model_util_scannet import rotate_aligned_boxes, ScannetDatasetConfig, rotate_aligned_boxes_along_axis
@@ -208,80 +208,6 @@ class ReferenceDataset(Dataset):
 
         return lang, label, lang_main
 
-    def _ground_tranform_des(self):
-        with open(GLOVE_PICKLE, "rb") as f:
-            glove = pickle.load(f)
-
-        lang = {}
-        lang_main = {}
-        i = 0
-        for data in self.scanrefer:
-            scene_id = data["scene_id"]
-            object_id = data["object_id"]
-            ann_id = data["ann_id"]
-            object_name = data["object_name"]
-
-            if scene_id not in lang:
-                lang[scene_id] = {}
-                lang_main[scene_id] = {}
-
-            if object_id not in lang[scene_id]:
-                lang[scene_id][object_id] = {}
-                lang_main[scene_id][object_id] = {}
-
-            if ann_id not in lang[scene_id][object_id]:
-                lang[scene_id][object_id][ann_id] = {}
-                lang_main[scene_id][object_id][ann_id] = {}
-                lang_main[scene_id][object_id][ann_id]["main"] = {}
-                lang_main[scene_id][object_id][ann_id]["len"] = 0
-                lang_main[scene_id][object_id][ann_id]["first_obj"] = -1
-                lang_main[scene_id][object_id][ann_id]["unk"] = glove["unk"]
-
-            # tokenize the description
-            tokens = data["token"]
-            embeddings = np.zeros((CONF.TRAIN.MAX_DES_LEN, 300))
-            main_embeddings = np.zeros((CONF.TRAIN.MAX_DES_LEN, 300))
-            pd = 1
-
-            main_object_cat = self.raw2label[object_name] if object_name in self.raw2label else 17
-            for token_id in range(CONF.TRAIN.MAX_DES_LEN):
-                if token_id < len(tokens):
-                    token = tokens[token_id]
-                    if token in glove:
-                        embeddings[token_id] = glove[token]
-                    else:
-                        embeddings[token_id] = glove["pad"]
-                    if pd == 1:
-                        if token in glove:
-                            main_embeddings[token_id] = glove[token]
-                        else:
-                            main_embeddings[token_id] = glove["unk"]
-                        if token == ".":
-                            pd = 0
-                            lang_main[scene_id][object_id][ann_id]["len"] = token_id + 1
-                    object_cat = self.raw2label[token] if token in self.raw2label else -1
-                    is_two_words = 0
-                    if token_id + 1 < len(tokens):
-                        token_new = token + " " + tokens[token_id+1]
-                        object_cat_new = self.raw2label[token_new] if token_new in self.raw2label else -1
-                        if object_cat_new != -1:
-                            object_cat = object_cat_new
-                            is_two_words = 1
-                    if lang_main[scene_id][object_id][ann_id]["first_obj"] == -1 and object_cat == main_object_cat:
-                        if is_two_words == 1 and token_id + 1 < len(tokens):
-                            lang_main[scene_id][object_id][ann_id]["first_obj"] = token_id + 1
-                        else:
-                            lang_main[scene_id][object_id][ann_id]["first_obj"] = token_id
-
-            if pd == 1:
-                lang_main[scene_id][object_id][ann_id]["len"] = len(tokens)
-
-            # store
-            lang[scene_id][object_id][ann_id] = embeddings
-            lang_main[scene_id][object_id][ann_id]["main"] = main_embeddings
-
-        return lang, lang_main
-
     def _build_vocabulary(self, dataset_name):
         vocab_path = VOCAB.format(dataset_name)
         if os.path.exists(vocab_path):
@@ -351,7 +277,6 @@ class ReferenceDataset(Dataset):
         self.num_vocabs = len(self.vocabulary["word2idx"].keys())
         self.raw2label = self._get_raw2label()
         self.lang, self.lang_ids, self.lang_main = self._tranform_des()
-        self.ground_lang, self.ground_lang_main = self._ground_tranform_des()
         self._build_frequency(dataset_name)
 
         # add scannet data
@@ -491,6 +416,15 @@ class ScannetReferenceDataset(ReferenceDataset):
 
     def __getitem__(self, idx):
         start = time.time()
+        #scene_id = self.scanrefer[idx]["scene_id"]
+        #object_id = int(self.scanrefer[idx]["object_id"])
+        #object_name = " ".join(self.scanrefer[idx]["object_name"].split("_"))
+        #ann_id = self.scanrefer[idx]["ann_id"]
+        # get language features
+        #lang_feat = self.lang[scene_id][str(object_id)][ann_id]
+        #lang_len = len(self.scanrefer[idx]["token"]) + 2
+        #lang_len = lang_len if lang_len <= CONF.TRAIN.MAX_DES_LEN + 2 else CONF.TRAIN.MAX_DES_LEN + 2
+
         lang_num = len(self.scanrefer_new[idx])
         scene_id = self.scanrefer_new[idx][0]["scene_id"]
 
@@ -505,12 +439,6 @@ class ScannetReferenceDataset(ReferenceDataset):
         main_lang_len_list = []
         first_obj_list = []
         unk_list = []
-
-        ground_lang_feat_list = []
-        ground_lang_len_list = []
-        ground_main_lang_feat_list = []
-        ground_main_lang_len_list = []
-        ground_first_obj_list = []
 
         for i in range(self.lang_num_max):
             if i < lang_num:
@@ -527,13 +455,6 @@ class ScannetReferenceDataset(ReferenceDataset):
                 first_obj = self.lang_main[scene_id][str(object_id)][ann_id]["first_obj"]
                 unk = self.lang_main[scene_id][str(object_id)][ann_id]["unk"]
 
-                ground_lang_feat = self.ground_lang[scene_id][str(object_id)][ann_id]
-                ground_lang_len = len(self.scanrefer_new[idx][i]["token"])
-                ground_lang_len = ground_lang_len if ground_lang_len <= CONF.TRAIN.MAX_DES_LEN else CONF.TRAIN.MAX_DES_LEN
-                ground_main_lang_feat = self.ground_lang_main[scene_id][str(object_id)][ann_id]["main"]
-                ground_main_lang_len = self.ground_lang_main[scene_id][str(object_id)][ann_id]["len"]
-                ground_first_obj = self.ground_lang_main[scene_id][str(object_id)][ann_id]["first_obj"]
-
             object_id_list.append(object_id)
             object_name_list.append(object_name)
             ann_id_list.append(ann_id)
@@ -545,12 +466,6 @@ class ScannetReferenceDataset(ReferenceDataset):
             main_lang_len_list.append(main_lang_len)
             first_obj_list.append(first_obj)
             unk_list.append(unk)
-
-            ground_lang_feat_list.append(ground_lang_feat)
-            ground_lang_len_list.append(ground_lang_len)
-            ground_main_lang_feat_list.append(ground_main_lang_feat)
-            ground_main_lang_len_list.append(ground_main_lang_len)
-            ground_first_obj_list.append(ground_first_obj)
 
         # get pc
         mesh_vertices = self.scene_data[scene_id]["mesh_vertices"]
@@ -775,7 +690,6 @@ class ScannetReferenceDataset(ReferenceDataset):
         data_dict["lang_feat"] = lang_feat.astype(np.float32) # language feature vectors
         data_dict["lang_len"] = np.array(lang_len).astype(np.int64) # length of each description
         data_dict["lang_ids"] = np.array(self.lang_ids[scene_id][str(object_id)][ann_id]).astype(np.int64)
-
         data_dict["center_label"] = target_bboxes.astype(np.float32)[:,0:3] # (MAX_NUM_OBJ, 3) for GT box center XYZ
         data_dict["heading_class_label"] = angle_classes.astype(np.int64) # (MAX_NUM_OBJ,) with int values in 0,...,NUM_HEADING_BIN-1
         data_dict["heading_residual_label"] = angle_residuals.astype(np.float32) # (MAX_NUM_OBJ,)
@@ -783,7 +697,6 @@ class ScannetReferenceDataset(ReferenceDataset):
         data_dict["size_residual_label"] = size_residuals.astype(np.float32) # (MAX_NUM_OBJ, 3)
         data_dict["num_bbox"] = np.array(num_bbox).astype(np.int64)
         data_dict["sem_cls_label"] = target_bboxes_semcls.astype(np.int64) # (MAX_NUM_OBJ,) semantic class index
-
         data_dict["scene_object_ids"] = target_object_ids.astype(np.int64) # (MAX_NUM_OBJ,) object ids of all objects
         data_dict["scene_object_rotations"] = scene_object_rotations.astype(np.float32) # (MAX_NUM_OBJ, 3, 3)
         data_dict["scene_object_rotation_masks"] = scene_object_rotation_masks.astype(np.int64) # (MAX_NUM_OBJ)
@@ -791,9 +704,7 @@ class ScannetReferenceDataset(ReferenceDataset):
         data_dict["vote_label"] = point_votes.astype(np.float32)
         data_dict["vote_label_mask"] = point_votes_mask.astype(np.int64)
         data_dict["dataset_idx"] = np.array(idx).astype(np.int64)
-        data_dict["scan_idx"] = np.array(idx).astype(np.int64)
         data_dict["pcl_color"] = pcl_color
-
         data_dict["ref_box_label"] = ref_box_label.astype(np.int64) # 0/1 reference labels for each object bbox
         data_dict["ref_center_label"] = ref_center_label.astype(np.float32)
         data_dict["ref_heading_class_label"] = np.array(int(ref_heading_class_label)).astype(np.int64)
@@ -814,18 +725,15 @@ class ScannetReferenceDataset(ReferenceDataset):
         data_dict["lang_feat_list"] = np.array(lang_feat_list).astype(np.float32)  # language feature vectors
         data_dict["lang_len_list"] = np.array(lang_len_list).astype(np.int64)  # length of each description
         data_dict["lang_ids_list"] = np.array(lang_ids_list).astype(np.int64)
-        data_dict["main_lang_feat_list"] = np.array(main_lang_feat_list).astype(np.float32)  # main language feature vectors
-        data_dict["main_lang_len_list"] = np.array(main_lang_len_list).astype(np.int64)  # length of each main description
+        data_dict["main_lang_feat_list"] = np.array(main_lang_feat_list).astype(
+            np.float32)  # main language feature vectors
+        data_dict["main_lang_len_list"] = np.array(main_lang_len_list).astype(
+            np.int64)  # length of each main description
         data_dict["first_obj_list"] = np.array(first_obj_list).astype(np.int64)
         data_dict["unk_list"] = np.array(unk_list).astype(np.float32)
+        data_dict["ref_box_label_list"] = np.array(ref_box_label_list).astype(
+            np.int64)  # 0/1 reference labels for each object bbox
 
-        data_dict["ground_lang_feat_list"] = np.array(ground_lang_feat_list).astype(np.float32)  # language feature vectors
-        data_dict["ground_lang_len_list"] = np.array(ground_lang_len_list).astype(np.int64)  # length of each description
-        data_dict["ground_main_lang_feat_list"] = np.array(ground_main_lang_feat_list).astype(np.float32)  # main language feature vectors
-        data_dict["ground_main_lang_len_list"] = np.array(ground_main_lang_len_list).astype(np.int64)  # length of each main description
-        data_dict["ground_first_obj_list"] = np.array(ground_first_obj_list).astype(np.int64)
-
-        data_dict["ref_box_label_list"] = np.array(ref_box_label_list).astype(np.int64)  # 0/1 reference labels for each object bbox
         data_dict["ref_center_label_list"] = np.array(ref_center_label_list).astype(np.float32)
         data_dict["ref_heading_class_label_list"] = np.array(ref_heading_class_label_list).astype(np.int64)
         data_dict["ref_heading_residual_label_list"] = np.array(ref_heading_residual_label_list).astype(np.int64)

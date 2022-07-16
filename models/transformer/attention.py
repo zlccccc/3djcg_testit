@@ -37,7 +37,7 @@ class ScaledDotProductAttention(nn.Module):
         nn.init.constant_(self.fc_v.bias, 0)
         nn.init.constant_(self.fc_o.bias, 0)
 
-    def forward(self, queries, keys, values, attention_mask=None, attention_weights=None, way='add'):
+    def forward(self, queries, keys, values, attention_mask=None, attention_weights=None, way='mul'):
         '''
         Computes
         :param queries: Queries (b_s, nq, d_model)
@@ -97,7 +97,7 @@ class MultiHeadAttention(nn.Module):
             self.register_state('running_keys', torch.zeros((0, d_model)))
             self.register_state('running_values', torch.zeros((0, d_model)))
 
-    def forward(self, queries, keys, values, attention_mask=None, attention_weights=None, way='add', output_attn=False):
+    def forward(self, queries, keys, values, attention_mask=None, attention_weights=None, way='mul', output_attn=False):
         if self.can_be_stateful and self._is_stateful:
             self.running_keys = torch.cat([self.running_keys, keys], 1)
             keys = self.running_keys

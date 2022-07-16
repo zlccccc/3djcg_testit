@@ -11,8 +11,8 @@ import os
 
 from lib.config_joint import CONF
 from .loss_detection import compute_vote_loss, compute_objectness_loss, compute_box_loss, compute_box_and_sem_cls_loss
-from .loss_captioning import compute_cap_loss
-from .loss_grounding import compute_reference_loss, compute_lang_classification_loss
+from .loss_captioning3 import compute_cap_loss
+from .loss_grounding3 import compute_reference_loss, compute_lang_classification_loss
 
 FAR_THRESHOLD = 0.3
 NEAR_THRESHOLD = 0.3
@@ -22,7 +22,7 @@ OBJECTNESS_CLS_WEIGHTS = [0.2, 0.8]  # put larger weights on positive objectness
 
 def get_joint_loss(data_dict, device, config, weights,
     detection=True, caption=True, reference=True, use_lang_classifier=True,
-    orientation=False, distance=False, num_bins=CONF.TRAIN.NUM_BINS):
+    orientation=False, distance=False, num_bins=CONF.TRAIN.NUM_BINS, num_ground_epoch=50):
     """ Loss functions
 
     Args:
@@ -77,7 +77,7 @@ def get_joint_loss(data_dict, device, config, weights,
 
     if reference:
         # Reference loss
-        data_dict, ref_loss, _, cluster_labels = compute_reference_loss(data_dict, config)
+        data_dict, ref_loss, _, cluster_labels = compute_reference_loss(data_dict, config, num_ground_epoch)
         data_dict["cluster_labels"] = cluster_labels
         data_dict["ref_loss"] = ref_loss
     else:
@@ -94,12 +94,12 @@ def get_joint_loss(data_dict, device, config, weights,
         # data_dict['max_iou_rate_0.5'] = 0
 
     if reference and use_lang_classifier:
-        data_dict["lang_loss"] = compute_lang_classification_loss(data_dict)
+        data_dict["lang_loss"] = compute_lang_classification_loss(data_dict, num_ground_epoch)
     else:
         data_dict["lang_loss"] = torch.zeros(1)[0].cuda()
 
     if caption:
-        cap_loss, cap_acc = compute_cap_loss(data_dict, config, weights)
+        cap_loss, cap_acc = compute_cap_loss(data_dict, config, weights, num_ground_epoch)
 
         # store
         data_dict["cap_loss"] = cap_loss
@@ -135,11 +135,14 @@ def get_joint_loss(data_dict, device, config, weights,
     # Final loss function
     # loss = data_dict["vote_loss"] + 0.1 * data_dict["objectness_loss"] + data_dict["box_loss"] + 0.1*data_dict["sem_cls_loss"] + data_dict["cap_loss"]
 
+    num_ground_epoch = num_ground_epoch - 5
     if detection:
-        loss = data_dict["vote_loss"] + 0.1*data_dict["objectness_loss"] + data_dict["box_loss"] + 0.1*data_dict["sem_cls_loss"]
-        # loss = data_dict["vote_loss"] + 1.0*data_dict["objectness_loss"] + 1.0*data_dict["box_loss"]
+        #loss = data_dict["vote_loss"] + 0.1*data_dict["objectness_loss"] + data_dict["box_loss"] + 0.1*data_dict["sem_cls_loss"]  #sem_cls_loss加到box_loss里了
+        loss = data_dict["vote_loss"] + 0.1*data_dict["objectness_loss"] + data_dict["box_loss"]
         loss *= 10 # amplify
-        if caption:
+        if data_dict["epoch"] < num_ground_epoch and caption:
+            loss += 0*data_dict["cap_loss"]
+        elif caption:
             loss += 0.2*data_dict["cap_loss"]
         if orientation:
             loss += 0.1*data_dict["ori_loss"]
@@ -150,7 +153,11 @@ def get_joint_loss(data_dict, device, config, weights,
         if use_lang_classifier:
             loss += 0.3*data_dict["lang_loss"]
     else:
-        loss = 0.2*data_dict["cap_loss"]
+        loss = 0.
+        if data_dict["epoch"] < num_ground_epoch and caption:
+            loss += 0*data_dict["cap_loss"]
+        elif caption:
+            loss += 0.2*data_dict["cap_loss"]
         if orientation:
             loss += 0.1*data_dict["ori_loss"]
         if distance:

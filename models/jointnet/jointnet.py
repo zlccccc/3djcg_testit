@@ -6,10 +6,10 @@ import os
 
 from models.base_module.backbone_module import Pointnet2Backbone
 from models.base_module.voting_module import VotingModule
-from models.base_module.lang_module import LangModule
+from models.base_module.lang_module2 import LangModule
 
-from models.proposal_module.proposal_module_fcos import ProposalModule
-from models.proposal_module.relation_module import RelationModule
+from models.proposal_module.proposal_module import ProposalModule
+from models.proposal_module.relation_module0 import RelationModule
 from models.refnet.match_module import MatchModule
 from models.capnet.caption_module import SceneCaptionModule, TopDownSceneCaptionModule
 

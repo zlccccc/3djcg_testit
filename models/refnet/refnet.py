@@ -8,7 +8,7 @@ from models.base_module.backbone_module import Pointnet2Backbone
 from models.base_module.voting_module import VotingModule
 from models.base_module.lang_module import LangModule
 
-from models.proposal_module.proposal_module_fcos import ProposalModule
+from models.proposal_module.proposal_module import ProposalModule
 from models.proposal_module.relation_module import RelationModule
 from .match_module import MatchModule
 

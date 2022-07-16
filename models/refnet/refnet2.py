@@ -6,31 +6,31 @@ import os
 
 from models.base_module.backbone_module import Pointnet2Backbone
 from models.base_module.voting_module import VotingModule
+from models.base_module.lang_module import LangModule
+
 from models.proposal_module.proposal_module import ProposalModule
-from models.proposal_module.relation_module import RelationModule
-from .caption_module import SceneCaptionModule, TopDownSceneCaptionModule
+from .match_module2 import MatchModule
 
 
-class CapNet(nn.Module):
-    def __init__(self, num_class, vocabulary, embeddings, num_heading_bin, num_size_cluster, mean_size_arr, 
-    input_feature_dim=0, num_proposal=256, num_locals=-1, vote_factor=1, sampling="vote_fps",
-    no_caption=False, use_topdown=False, query_mode="corner", 
-    graph_mode="graph_conv", num_graph_steps=0, use_relation=False, graph_aggr="add",
-    use_orientation=False, num_bins=6, use_distance=False, use_new=False, 
-    emb_size=300, hidden_size=512, dataset_config=None):
+class RefNet(nn.Module):
+    def __init__(self, num_class, num_heading_bin, num_size_cluster, mean_size_arr,
+                 input_feature_dim=0, num_proposal=128, vote_factor=1, sampling="vote_fps",
+                 use_lang_classifier=True, use_bidir=False, no_reference=False,
+                 emb_size=300, hidden_size=256, dataset_config=None):
         super().__init__()
 
         self.num_class = num_class
         self.num_heading_bin = num_heading_bin
         self.num_size_cluster = num_size_cluster
         self.mean_size_arr = mean_size_arr
-        assert(mean_size_arr.shape[0] == self.num_size_cluster)
+        assert (mean_size_arr.shape[0] == self.num_size_cluster)
         self.input_feature_dim = input_feature_dim
         self.num_proposal = num_proposal
         self.vote_factor = vote_factor
         self.sampling = sampling
-        self.no_caption = no_caption
-        self.num_graph_steps = num_graph_steps
+        self.use_lang_classifier = use_lang_classifier
+        self.use_bidir = use_bidir
+        self.no_reference = no_reference
         self.dataset_config = dataset_config
 
         # --------- PROPOSAL GENERATION ---------
@@ -42,25 +42,24 @@ class CapNet(nn.Module):
 
         # Vote aggregation and object proposal
         self.proposal = ProposalModule(num_class, num_heading_bin, num_size_cluster, mean_size_arr, num_proposal, sampling)
-        #self.proposal = ProposalModule(num_class, num_heading_bin, num_size_cluster, mean_size_arr, num_proposal,
-        #                               sampling, config_transformer=config_transformer, dataset_config=dataset_config)
 
-        # Caption generation
-        if not no_caption:
-            self.relation = RelationModule(num_proposals=num_proposal, det_channel=128)  # bef 256
-            if use_topdown:
-                self.caption = TopDownSceneCaptionModule(vocabulary, embeddings, emb_size, 128, 
-                    hidden_size, num_proposal, num_locals, query_mode, use_relation)
-            else:
-                self.caption = SceneCaptionModule(vocabulary, embeddings, emb_size, 128, hidden_size, num_proposal)
+        if not no_reference:
+            # --------- LANGUAGE ENCODING ---------
+            # Encode the input descriptions into vectors
+            # (including attention and language classification)
+            self.lang = LangModule(num_class, use_lang_classifier, use_bidir, emb_size, hidden_size)
 
-    def forward(self, data_dict, use_tf=True, is_eval=False):
+            # --------- PROPOSAL MATCHING ---------
+            # Match the generated proposals and select the most confident ones
+            self.match = MatchModule(num_proposals=num_proposal, lang_size=(1 + int(self.use_bidir)) * hidden_size, det_channel=128)  # bef 256
+
+    def forward(self, data_dict):
         """ Forward pass of the network
 
         Args:
             data_dict: dict
                 {
-                    point_clouds, 
+                    point_clouds,
                     lang_feat
                 }
 
@@ -81,14 +80,14 @@ class CapNet(nn.Module):
 
         # --------- HOUGH VOTING ---------
         data_dict = self.backbone_net(data_dict)
-                
+
         # --------- HOUGH VOTING ---------
         xyz = data_dict["fp2_xyz"]
         features = data_dict["fp2_features"]
         data_dict["seed_inds"] = data_dict["fp2_inds"]
         data_dict["seed_xyz"] = xyz
         data_dict["seed_features"] = features
-        
+
         xyz, features = self.vgen(xyz, features)
         features_norm = torch.norm(features, p=2, dim=1)
         features = features.div(features_norm.unsqueeze(1))
@@ -98,26 +97,23 @@ class CapNet(nn.Module):
         # --------- PROPOSAL GENERATION ---------
         data_dict = self.proposal(xyz, features, data_dict)
 
-        #######################################
-        #                                     #
-        #           GRAPH ENHANCEMENT         #
-        #                                     #
-        #######################################
+        if not self.no_reference:
+            #######################################
+            #                                     #
+            #           LANGUAGE BRANCH           #
+            #                                     #
+            #######################################
 
-        if self.num_graph_steps > 0: data_dict = self.graph(data_dict)
+            # --------- LANGUAGE ENCODING ---------
+            data_dict = self.lang(data_dict)
 
-        #######################################
-        #                                     #
-        #            CAPTION BRANCH           #
-        #                                     #
-        #######################################
-
-        # --------- CAPTION GENERATION ---------
-        if not self.no_caption:
-            data_dict = self.relation(data_dict)
-            data_dict = self.caption(data_dict, use_tf, is_eval)
-        else:
-            data_dict['max_iou_rate_0.25'] = 0.
-            data_dict['max_iou_rate_0.5'] = 0.
+            #######################################
+            #                                     #
+            #          PROPOSAL MATCHING          #
+            #                                     #
+            #######################################
+            # --------- PROPOSAL MATCHING ---------
+            # config for bbox_embedding
+            data_dict = self.match(data_dict)
 
         return data_dict

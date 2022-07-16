@@ -239,12 +239,12 @@ class ReferenceDataset(Dataset):
 
             # tokenize the description
             tokens = data["token"]
-            embeddings = np.zeros((CONF.TRAIN.MAX_DES_LEN, 300))
-            main_embeddings = np.zeros((CONF.TRAIN.MAX_DES_LEN, 300))
+            embeddings = np.zeros((CONF.TRAIN.MAX_GROUND_DES_LEN, 300))
+            main_embeddings = np.zeros((CONF.TRAIN.MAX_GROUND_DES_LEN, 300))
             pd = 1
 
             main_object_cat = self.raw2label[object_name] if object_name in self.raw2label else 17
-            for token_id in range(CONF.TRAIN.MAX_DES_LEN):
+            for token_id in range(CONF.TRAIN.MAX_GROUND_DES_LEN):
                 if token_id < len(tokens):
                     token = tokens[token_id]
                     if token in glove:
@@ -529,7 +529,7 @@ class ScannetReferenceDataset(ReferenceDataset):
 
                 ground_lang_feat = self.ground_lang[scene_id][str(object_id)][ann_id]
                 ground_lang_len = len(self.scanrefer_new[idx][i]["token"])
-                ground_lang_len = ground_lang_len if ground_lang_len <= CONF.TRAIN.MAX_DES_LEN else CONF.TRAIN.MAX_DES_LEN
+                ground_lang_len = ground_lang_len if ground_lang_len <= CONF.TRAIN.MAX_GROUND_DES_LEN else CONF.TRAIN.MAX_GROUND_DES_LEN
                 ground_main_lang_feat = self.ground_lang_main[scene_id][str(object_id)][ann_id]["main"]
                 ground_main_lang_len = self.ground_lang_main[scene_id][str(object_id)][ann_id]["len"]
                 ground_first_obj = self.ground_lang_main[scene_id][str(object_id)][ann_id]["first_obj"]

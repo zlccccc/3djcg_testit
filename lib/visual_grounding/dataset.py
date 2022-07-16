@@ -12,9 +12,9 @@ import pickle
 import numpy as np
 import multiprocessing as mp
 from torch.utils.data import Dataset
-# import torch.multiprocessing
-# torch.multiprocessing.set_sharing_strategy('file_system')
-from lib.configs.config_grounding import CONF
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+from lib.config_grounding import CONF
 from utils.pc_utils import random_sampling, rotx, roty, rotz
 from data.scannet.model_util_scannet import rotate_aligned_boxes, ScannetDatasetConfig, rotate_aligned_boxes_along_axis
 import random
@@ -31,7 +31,7 @@ MULTIVIEW_DATA = CONF.MULTIVIEW
 GLOVE_PICKLE = os.path.join(CONF.PATH.DATA, "glove.p")
 
 class ScannetReferenceDataset(Dataset):
-
+       
     def __init__(self, scanrefer, scanrefer_new, scanrefer_all_scene,
         split="train",
         num_points=40000,
@@ -224,7 +224,7 @@ class ScannetReferenceDataset(Dataset):
             point_votes_mask = np.zeros(self.num_points)
 
             # ------------------------------- DATA AUGMENTATION ------------------------------
-            if self.augment:  # and not self.debug: # shape not changed;
+            if self.augment:  # and not self.debug: # shape not changed; TODO scale
                 if np.random.random() > 0.7:
                     # Flipping along the YZ plane
                     point_cloud[:, 0] = -1 * point_cloud[:, 0]
@@ -379,7 +379,7 @@ class ScannetReferenceDataset(Dataset):
         data_dict["unique_multiple_list"] = np.array(unique_multiple_list).astype(np.int64)
 
         return data_dict
-
+    
     def _get_raw2label(self):
         # mapping
         scannet_labels = DC.type2class.keys()
@@ -550,7 +550,6 @@ class ScannetReferenceDataset(Dataset):
             self.scene_data[scene_id]["instance_labels"] = np.load(os.path.join(CONF.PATH.SCANNET_DATA, scene_id)+"_ins_label.npy")
             self.scene_data[scene_id]["semantic_labels"] = np.load(os.path.join(CONF.PATH.SCANNET_DATA, scene_id)+"_sem_label.npy")
             # self.scene_data[scene_id]["instance_bboxes"] = np.load(os.path.join(CONF.PATH.SCANNET_DATA, scene_id)+"_bbox.npy")
-            # instance_bboxes: [center(x/y/z), distance(dx/dy/dz), sem_cls, obj_id]
             self.scene_data[scene_id]["instance_bboxes"] = np.load(os.path.join(CONF.PATH.SCANNET_DATA, scene_id)+"_aligned_bbox.npy")
 
         # prepare class mapping
@@ -580,7 +579,7 @@ class ScannetReferenceDataset(Dataset):
         y_factor = np.random.choice(np.arange(-0.5, 0.501, 0.001), size=1)[0]
         z_factor = np.random.choice(np.arange(-0.5, 0.501, 0.001), size=1)[0]
         factor = [x_factor, y_factor, z_factor]
-
+        
         # dump
         coords += factor
         point_set[:, :3] = coords

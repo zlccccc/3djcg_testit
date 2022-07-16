@@ -39,32 +39,42 @@ SCANREFER_VAL = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_
 MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
 DC = ScannetDatasetConfig()
 
-def get_dataloader(args, scanrefer, all_scene_list, split, config, augment):
+def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config, augment):
     dataset = ScannetReferenceDataset(
-        scanrefer=scanrefer, 
-        scanrefer_all_scene=all_scene_list, 
-        split=split, 
-        num_points=args.num_points, 
-        use_color=args.use_color, 
+        scanrefer=scanrefer,
+        scanrefer_new=scanrefer_new,
+        scanrefer_all_scene=all_scene_list,
+        split=split,
+        name=args.dataset,
+        num_points=args.num_points,
         use_height=(not args.no_height),
-        use_normal=args.use_normal, 
-        use_multiview=args.use_multiview
+        use_color=args.use_color,
+        use_normal=args.use_normal,
+        use_multiview=args.use_multiview,
+        lang_num_max=1,
+        augment=augment
     )
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
     return dataset, dataloader
 
-def get_model(args):
+def get_model(args, DC, dataset):
     # load model
     input_channels = int(args.use_multiview) * 128 + int(args.use_normal) * 3 + int(args.use_color) * 3 + int(not args.no_height)
-    model = RefNet(
+    model = JointNet(
         num_class=DC.num_class,
+        vocabulary=dataset.vocabulary,
+        embeddings=dataset.glove,
         num_heading_bin=DC.num_heading_bin,
         num_size_cluster=DC.num_size_cluster,
         mean_size_arr=DC.mean_size_arr,
+        input_feature_dim=input_channels,
         num_proposal=args.num_proposals,
-        input_feature_dim=input_channels
+        no_caption=True,
+        use_topdown=False,
+        use_lang_classifier=True,
+        dataset_config=DC
     ).cuda()
 
     path = os.path.join(CONF.PATH.OUTPUT, args.folder, "model.pth")
@@ -84,7 +94,23 @@ def get_scanrefer(args):
 
     scanrefer = [data for data in scanrefer if data["scene_id"] in scene_list]
 
-    return scanrefer, scene_list
+    new_scanrefer = []
+    scanrefer_new = []
+    scanrefer_new_scene = []
+    scene_id = ""
+    for data in scanrefer:
+        new_scanrefer.append(data)
+        if scene_id != data["scene_id"]:
+            scene_id = data["scene_id"]
+            if len(scanrefer_new_scene) > 0:
+                scanrefer_new.append(scanrefer_new_scene)
+            scanrefer_new_scene = []
+        if len(scanrefer_new_scene) >= 1:
+            scanrefer_new.append(scanrefer_new_scene)
+            scanrefer_new_scene = []
+        scanrefer_new_scene.append(data)
+    scanrefer_new.append(scanrefer_new_scene)
+    return scanrefer, scene_list, scanrefer_new
 
 def write_ply(verts, colors, indices, output_file):
     if colors is None:
@@ -232,7 +258,8 @@ def write_bbox(bbox, mode, output_file):
 
         return corners
 
-    radius = 0.03
+
+    radius = 0.01
     offset = [0,0,0]
     verts = []
     indices = []
@@ -339,20 +366,16 @@ def dump_results(args, scanrefer, data, config):
     
     # from network outputs
     # detection
-    pred_objectness = torch.argmax(data['objectness_scores'], 2).float().detach().cpu().numpy()
-    pred_center = data['center'].detach().cpu().numpy() # (B,K,3)
-    pred_heading_class = torch.argmax(data['heading_scores'], -1) # B,num_proposal
-    pred_heading_residual = torch.gather(data['heading_residuals'], 2, pred_heading_class.unsqueeze(-1)) # B,num_proposal,1
-    pred_heading_class = pred_heading_class.detach().cpu().numpy() # B,num_proposal
-    pred_heading_residual = pred_heading_residual.squeeze(2).detach().cpu().numpy() # B,num_proposal
-    pred_size_class = torch.argmax(data['size_scores'], -1) # B,num_proposal
-    pred_size_residual = torch.gather(data['size_residuals'], 2, pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1,1,1,3)) # B,num_proposal,1,3
-    pred_size_residual = pred_size_residual.squeeze(2).detach().cpu().numpy() # B,num_proposal,3
+    # predicted bbox
+    pred_heading = data['pred_heading'].detach().cpu().numpy() # B,num_proposal
+    pred_center = data['pred_center'].detach().cpu().numpy() # (B, num_proposal)
+    pred_box_size = data['pred_size'].detach().cpu().numpy() # (B, num_proposal, 3)
     # reference
     pred_ref_scores = data["cluster_ref"].detach().cpu().numpy()
-    pred_ref_scores_softmax = F.softmax(data["cluster_ref"] * torch.argmax(data['objectness_scores'], 2).float() * data['pred_mask'], dim=1).detach().cpu().numpy()
+    #pred_ref_scores_softmax = F.softmax(data["cluster_ref"] * torch.argmax(data['objectness_scores'], 2).float() * data['pred_mask'], dim=1).detach().cpu().numpy()
+    pred_ref_scores_softmax = F.softmax(data["cluster_ref"], dim=1).detach().cpu().numpy()
     # post-processing
-    nms_masks = data['pred_mask'].detach().cpu().numpy() # B,num_proposal
+    #nms_masks = data['pred_mask'].detach().cpu().numpy() # B,num_proposal
     
     # ground truth
     gt_center = data['center_label'].cpu().numpy() # (B,MAX_NUM_OBJ,3)
@@ -361,7 +384,8 @@ def dump_results(args, scanrefer, data, config):
     gt_size_class = data['size_class_label'].cpu().numpy() # B,K2
     gt_size_residual = data['size_residual_label'].cpu().numpy() # B,K2,3
     # reference
-    gt_ref_labels = data["ref_box_label"].detach().cpu().numpy()
+    #gt_ref_labels = data["ref_box_label"].detach().cpu().numpy()
+    gt_ref_labels_list = data["ref_box_label_list"].detach().cpu().numpy()
 
     for i in range(batch_size):
         # basic info
@@ -383,8 +407,10 @@ def dump_results(args, scanrefer, data, config):
             write_ply_rgb(point_clouds[i], pcl_color[i], os.path.join(scene_dump_dir, 'pc.ply'))
 
          # filter out the valid ground truth reference box
-        assert gt_ref_labels[i].shape[0] == gt_center[i].shape[0]
-        gt_ref_idx = np.argmax(gt_ref_labels[i], 0)
+        #assert gt_ref_labels[i].shape[0] == gt_center[i].shape[0]
+        #gt_ref_idx = np.argmax(gt_ref_labels[i], 0)
+        assert gt_ref_labels_list[i][0].shape[0] == gt_center[i].shape[0]
+        gt_ref_idx = np.argmax(gt_ref_labels_list[i][0], 0)
 
         # visualize the gt reference box
         # NOTE: for each object there should be only one gt reference box
@@ -397,29 +423,40 @@ def dump_results(args, scanrefer, data, config):
             write_bbox(gt_obb, 0, os.path.join(scene_dump_dir, 'gt_{}_{}.ply'.format(object_id, object_name)))
         
         # find the valid reference prediction
-        pred_masks = nms_masks[i] * pred_objectness[i] == 1
+        #pred_masks = nms_masks[i] * pred_objectness[i] == 1
         assert pred_ref_scores[i].shape[0] == pred_center[i].shape[0]
-        pred_ref_idx = np.argmax(pred_ref_scores[i] * pred_masks, 0)
-        assigned_gt = torch.gather(data["ref_box_label"], 1, data["object_assignment"]).detach().cpu().numpy()
+        #pred_ref_idx = np.argmax(pred_ref_scores[i] * pred_masks, 0)
+        pred_ref_idx = np.argmax(pred_ref_scores[i], 0)
+        #assigned_gt = torch.gather(data["ref_box_label"], 1, data["object_assignment"]).detach().cpu().numpy()
 
         # visualize the predicted reference box
-        pred_obb = config.param2obb(pred_center[i, pred_ref_idx, 0:3], pred_heading_class[i, pred_ref_idx], pred_heading_residual[i, pred_ref_idx],
-                pred_size_class[i, pred_ref_idx], pred_size_residual[i, pred_ref_idx])
-        pred_bbox = get_3d_box(pred_obb[3:6], pred_obb[6], pred_obb[0:3])
+        pred_center_i = pred_center[i, pred_ref_idx]
+        pred_heading_i = pred_heading[i, pred_ref_idx]
+        pred_box_size_i = pred_box_size[i, pred_ref_idx]
+        #pred_obb = data["pred_bbox_corner"][i, pred_ref_idx]
+        #print("pred_center", pred_center_i.shape, pred_center_i)
+        #print("pred_heading", pred_heading_i.shape)
+        #print("pred_box_size", pred_box_size_i.shape)
+        #print("pred_obb", pred_obb.shape)
+        pred_bbox = get_3d_box(pred_box_size_i, pred_heading_i, pred_center_i)
+        #print("pred_bbox", pred_bbox.shape)
         iou = box3d_iou(gt_bbox, pred_bbox)
-
+        #print("iou", iou)
+        pred_obb = np.zeros(6)
+        pred_obb[0:3] = pred_center_i
+        pred_obb[3:6] = pred_box_size_i
         write_bbox(pred_obb, 1, os.path.join(scene_dump_dir, 'pred_{}_{}_{}_{:.5f}_{:.5f}.ply'.format(object_id, object_name, ann_id, pred_ref_scores_softmax[i, pred_ref_idx], iou)))
 
 def visualize(args):
     # init training dataset
     print("preparing data...")
-    scanrefer, scene_list = get_scanrefer(args)
+    scanrefer, scene_list, new_scanrefer = get_scanrefer(args)
 
     # dataloader
-    _, dataloader = get_dataloader(args, scanrefer, scene_list, "val", DC, False)
+    dataset, dataloader = get_dataloader(args, scanrefer, new_scanrefer, scene_list, "val", DC, False)
 
     # model
-    model = get_model(args)
+    model = get_model(args, DC, dataset)
 
     # config
     POST_DICT = {
@@ -440,8 +477,22 @@ def visualize(args):
             data[key] = data[key].cuda()
 
         # feed
+        data["epoch"] = 0
         data = model(data)
-        _, data = get_loss(data, DC, True, True, POST_DICT)
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        #_, data = get_joint_loss(data, device, DC, True, True, POST_DICT)
+        data = get_joint_loss(
+            data_dict=data,
+            device=device,
+            config=DC,
+            weights=0,
+            detection=True,
+            caption=False,
+            reference=True,
+            use_lang_classifier=True,
+            orientation=False,
+            distance=False,
+        )
         
         # visualize
         dump_results(args, scanrefer, data, DC)
@@ -451,6 +502,7 @@ def visualize(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, help="Choose a dataset: ScanRefer or ReferIt3D", default="ScanRefer")
     parser.add_argument("--folder", type=str, help="Folder containing the model", required=True)
     parser.add_argument("--gpu", type=str, help="gpu", default="0")
     parser.add_argument("--scene_id", type=str, help="scene id", default="")

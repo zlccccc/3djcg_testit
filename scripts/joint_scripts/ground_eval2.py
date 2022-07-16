@@ -15,13 +15,13 @@ from tqdm import tqdm
 from copy import deepcopy
 
 sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
-from lib.config import CONF
-from lib.visual_grounding.dataset import ScannetReferenceDataset
-from lib.visual_grounding.solver4 import Solver
+from lib.config_joint import CONF
+from lib.joint.dataset2 import ScannetReferenceDataset
+from lib.joint.solver2 import Solver
 from lib.ap_helper4 import APCalculator, parse_predictions, parse_groundtruths
-from lib.loss_helper.loss_grounding import get_loss
-from lib.visual_grounding.eval_helper4 import get_eval
-from models.refnet.refnet import RefNet
+from lib.loss_helper.loss_joint2 import get_joint_loss
+from lib.joint.eval_ground import get_eval
+from models.jointnet.jointnet import JointNet
 from data.scannet.model_util_scannet import ScannetDatasetConfig
 
 print('Import Done', flush=True)
@@ -34,7 +34,8 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
         scanrefer=scanrefer,
         scanrefer_new=scanrefer_new,
         scanrefer_all_scene=all_scene_list, 
-        split=split, 
+        split=split,
+        name=args.dataset,
         num_points=args.num_points, 
         use_color=args.use_color, 
         use_height=(not args.no_height),
@@ -48,19 +49,23 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
 
     return dataset, dataloader
 
-def get_model(args, config):
+def get_model(args, DC, dataset):
     # load model
     input_channels = int(args.use_multiview) * 128 + int(args.use_normal) * 3 + int(args.use_color) * 3 + int(not args.no_height)
-    model = RefNet(
-        num_class=config.num_class,
-        num_heading_bin=config.num_heading_bin,
-        num_size_cluster=config.num_size_cluster,
-        mean_size_arr=config.mean_size_arr,
-        num_proposal=args.num_proposals,
+    model = JointNet(
+        num_class=DC.num_class,
+        vocabulary=dataset.vocabulary,
+        embeddings=dataset.glove,
+        num_heading_bin=DC.num_heading_bin,
+        num_size_cluster=DC.num_size_cluster,
+        mean_size_arr=DC.mean_size_arr,
         input_feature_dim=input_channels,
+        num_proposal=args.num_proposals,
+        no_caption=True,
+        use_topdown=False,
         use_lang_classifier=(not args.no_lang_cls),
         use_bidir=args.use_bidir,
-        dataset_config=config,
+        dataset_config=DC
     ).cuda()
 
     model_name = "model_last.pth" if args.detection else "model.pth"
@@ -111,6 +116,17 @@ def get_scanrefer(args):
         if len(scanrefer_val_new_scene) > 0:
             scanrefer_val_new.append(scanrefer_val_new_scene)
 
+        new_scanrefer_eval_val2 = []
+        scanrefer_eval_val_new2 = []
+        for scene_id in scene_list:
+            data = deepcopy(SCANREFER_VAL[0])
+            data["scene_id"] = scene_id
+            new_scanrefer_eval_val2.append(data)
+            scanrefer_eval_val_new_scene2 = []
+            for i in range(args.lang_num_max):
+                scanrefer_eval_val_new_scene2.append(data)
+            scanrefer_eval_val_new2.append(scanrefer_eval_val_new_scene2)
+
     return scanrefer, scene_list, scanrefer_val_new
 
 def eval_ref(args):
@@ -124,10 +140,10 @@ def eval_ref(args):
 
     # dataloader
     #_, dataloader = get_dataloader(args, scanrefer, scene_list, "val", DC)
-    _, dataloader = get_dataloader(args, scanrefer, scanrefer_val_new, scene_list, "val", DC)
+    dataset, dataloader = get_dataloader(args, scanrefer, scanrefer_val_new, scene_list, "val", DC)
 
     # model
-    model = get_model(args, DC)
+    model = get_model(args, DC, dataset)
 
     # config
     POST_DICT = {
@@ -175,13 +191,20 @@ def eval_ref(args):
 
                 # feed
                 with torch.no_grad():
+                    data["epoch"] = 0
                     data = model(data)
-                    data = get_loss(
-                        data_dict=data, 
-                        config=DC, 
+                    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+                    data = get_joint_loss(
+                        data_dict=data,
+                        device=device,
+                        config=DC,
+                        weights=0,
                         detection=True,
+                        caption=False,
                         reference=True, 
-                        use_lang_classifier=not args.no_lang_cls
+                        use_lang_classifier=not args.no_lang_cls,
+                        orientation=False,
+                        distance=False,
                     )
                     data = get_eval(
                         data_dict=data, 
@@ -453,6 +476,7 @@ def eval_det(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, help="Choose a dataset: ScanRefer or ReferIt3D", default="ScanRefer")
     parser.add_argument("--folder", type=str, help="Folder containing the model")
     parser.add_argument("--gpu", type=str, help="gpu", default="0")
     parser.add_argument("--batch_size", type=int, help="batch size", default=8)

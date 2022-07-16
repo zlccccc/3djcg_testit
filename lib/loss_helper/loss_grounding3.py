@@ -24,7 +24,7 @@ GT_VOTE_FACTOR = 3  # number of GT votes per point
 OBJECTNESS_CLS_WEIGHTS = [0.2, 0.8]  # put larger weights on positive objectness
 
 
-def compute_reference_loss(data_dict, config, no_reference=False):
+def compute_reference_loss(data_dict, config, no_reference=False, num_ground_epoch=150):
     """ Compute cluster reference loss
 
     Args:
@@ -57,6 +57,8 @@ def compute_reference_loss(data_dict, config, no_reference=False):
 
     if not no_reference:
         cluster_preds = data_dict["cluster_ref"].reshape(batch_size, len_nun_max, num_proposals)
+        if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+            newpred_cluster_preds = data_dict["newpred_cluster_ref"].reshape(batch_size, len_nun_max, num_proposals)
     else:
         cluster_preds = torch.zeros(batch_size, len_nun_max, num_proposals).cuda()
 
@@ -95,6 +97,8 @@ def compute_reference_loss(data_dict, config, no_reference=False):
         gt_labels[i] = labels
         # reference loss
         loss += criterion(cluster_preds[i, :lang_num[i]], cluster_labels[:lang_num[i]].float().clone())
+        if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+            loss += criterion(newpred_cluster_preds[i, :lang_num[i]], cluster_labels[:lang_num[i]].float().clone())
 
     data_dict['max_iou_rate_0.25'] = max_iou_rate_25 / sum(lang_num.cpu().numpy())
     data_dict['max_iou_rate_0.5'] = max_iou_rate_5 / sum(lang_num.cpu().numpy())
@@ -107,16 +111,20 @@ def compute_reference_loss(data_dict, config, no_reference=False):
     return data_dict, loss, cluster_preds, cluster_labels
 
 
-def compute_lang_classification_loss(data_dict):
+def compute_lang_classification_loss(data_dict, num_ground_epoch=150):
     criterion = torch.nn.CrossEntropyLoss()
     object_cat_list = data_dict["object_cat_list"]
     batch_size, len_nun_max = object_cat_list.shape[:2]
     lang_num = data_dict["lang_num"]
     lang_scores = data_dict["lang_scores"].reshape(batch_size, len_nun_max, -1)
+    if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+        newpred_lang_scores = data_dict["newpred_lang_scores"].reshape(batch_size, len_nun_max, -1)
     loss = 0.
     for i in range(batch_size):
         num = lang_num[i]
         loss += criterion(lang_scores[i, :num], object_cat_list[i, :num])
+        if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+            loss += criterion(newpred_lang_scores[i, :num], object_cat_list[i, :num])
     loss = loss / batch_size
     return loss
 
@@ -179,7 +187,7 @@ def get_loss(data_dict, config, detection=True, reference=True, use_lang_classif
         data_dict["cluster_labels"] = cluster_labels
         data_dict["ref_loss"] = ref_loss
     else:
-        #raise NotImplementedError('Only detection; not implemented')
+        raise NotImplementedError('Only detection; not implemented')
         # # Reference loss
         data_dict, ref_loss, _, cluster_labels = compute_reference_loss(data_dict, config, no_reference=True)
         lang_count = data_dict['ref_center_label_list'].shape[1]

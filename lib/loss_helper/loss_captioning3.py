@@ -23,7 +23,7 @@ GT_VOTE_FACTOR = 3  # number of GT votes per point
 OBJECTNESS_CLS_WEIGHTS = [0.2, 0.8]  # put larger weights on positive objectness
 
 
-def compute_cap_loss(data_dict, config, weights):
+def compute_cap_loss(data_dict, config, weights, num_ground_epoch):
     """ Compute cluster caption loss
 
     Args:
@@ -36,12 +36,16 @@ def compute_cap_loss(data_dict, config, weights):
     # unpack
     batch_size, len_nun_max = data_dict["lang_feat_list"].shape[:2]
     pred_caps = data_dict["lang_cap"] # (B * len_nun_max, num_words - 1, num_vocabs)
+    if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+        newpred_caps = data_dict["newpred_lang_cap"]
     num_words = data_dict["lang_len_list"].reshape(batch_size * len_nun_max).max()
     #target_caps = data_dict["lang_ids"][:, 1:num_words] # (B * len_nun_max, num_words - 1)
     target_caps = data_dict["lang_ids_list"][:, :, 1:num_words]  # (B, len_nun_max, num_words - 1)
 
     _, _, num_vocabs = pred_caps.shape
     pred_caps = pred_caps.reshape(batch_size, len_nun_max, -1, num_vocabs) # (B, len_nun_max, num_words - 1, num_vocabs)
+    if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+        newpred_caps = newpred_caps.reshape(batch_size, len_nun_max, -1, num_vocabs)  # (B, len_nun_max, num_words - 1, num_vocabs)
 
     # caption loss
     criterion = nn.CrossEntropyLoss(ignore_index=0, reduction="none")
@@ -55,11 +59,18 @@ def compute_cap_loss(data_dict, config, weights):
         #print("pred_caps1", pred_caps[i, :lang_num[i]].reshape(-1, num_vocabs).shape)
         #print("target_caps1", target_caps[i, :lang_num[i]].reshape(-1).shape)
         cap_loss = criterion(pred_caps[i, :lang_num[i]].reshape(-1, num_vocabs), target_caps[i, :lang_num[i]].reshape(-1))
+        if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+            cap_loss2 = criterion(newpred_caps[i, :lang_num[i]].reshape(-1, num_vocabs), target_caps[i, :lang_num[i]].reshape(-1))
+
         good_bbox_mask = good_bbox_masks[i, :lang_num[i]].reshape(-1).float()
         #print("cap_loss",cap_loss.shape)
         #print("good_bbox_mask", good_bbox_mask.shape)
         cap_loss = torch.sum(cap_loss * good_bbox_mask) / (torch.sum(good_bbox_mask) + 1e-6)
-        cap_loss_all = cap_loss_all + cap_loss
+        if data_dict["epoch"] >= num_ground_epoch and data_dict["istrain"][0] == 1:
+            cap_loss2 = torch.sum(cap_loss2 * good_bbox_mask) / (torch.sum(good_bbox_mask) + 1e-6)
+            cap_loss_all = cap_loss_all + cap_loss + cap_loss2
+        else:
+            cap_loss_all = cap_loss_all + cap_loss
 
     cap_loss = cap_loss_all / batch_size
 
@@ -233,14 +244,14 @@ def get_scene_cap_loss(data_dict, device, config, weights,
         # loss = data_dict["vote_loss"] + 1.0*data_dict["objectness_loss"] + 1.0*data_dict["box_loss"]
         loss *= 10 # amplify
         if caption:
-            loss += 0.2*data_dict["cap_loss"]
+            loss += data_dict["cap_loss"]
         if orientation:
             loss += 0.1*data_dict["ori_loss"]
         if distance:
             loss += 0.1*data_dict["dist_loss"]
             # loss += data_dict["dist_loss"]
     else:
-        loss = 0.2*data_dict["cap_loss"]
+        loss = data_dict["cap_loss"]
         if orientation:
             loss += 0.1*data_dict["ori_loss"]
         if distance:
